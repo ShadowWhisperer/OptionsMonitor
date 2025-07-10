@@ -1,12 +1,11 @@
-Monitor your sell options. Compare strike price to current price and show what happens on expiration date.
-
-Still in testing phase.
-
-Stock list is saved here **C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv**
-
-Double click an entry to modify it and press the enter key.
-
+Compare strike price to current price, and show what happens on expiration date.  
 Stock prices are pulled from Yahoo Finance.  
+
+Stock list is saved here *C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv*  
+
+Double click an entry to modify it, then press the enter key.  
+
+[Download](https://github.com/ShadowWhisperer/OptionsMonitor/releases/latest/download/OptionsMonitor.exe)
 
 <br> 
  
