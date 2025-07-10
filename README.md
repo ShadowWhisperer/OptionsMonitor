@@ -1,2 +1,11 @@
-# OptionsMonitor
-Track current owned stock options and compare to current price
+Monitor your sell options. Compare strike price to current price and show what happens on expiration date.
+
+Still in testing phase.
+
+Stock list is saved here: C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv
+
+Double click an entry to modify it and press the enter key.
+
+Stock prices are pulled from Yahoo Finance.
+
+<img width="885" height="422" alt="OM" src="https://github.com/user-attachments/assets/b9101274-244f-4ea1-806c-0f4de7eb795c" />
