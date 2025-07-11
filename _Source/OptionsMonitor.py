@@ -12,7 +12,7 @@ class OptionsMonitor:
         self.root.title("Options Monitor")
         self.data_file = r"C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv"
         self.df = self.load_data()
-        self.sort_reverse = {}  # Track column sort direction
+        self.sort_reverse = {}  # Track sort direction
         self.editing_item = None
         self.setup_gui()
 
@@ -28,6 +28,8 @@ class OptionsMonitor:
                 df = df.drop(columns=['Current Price'])
             if 'Outcome' in df.columns:
                 df = df.drop(columns=['Outcome'])
+            if 'Diff' in df.columns:
+                df = df.drop(columns=['Diff'])
             return df
         except FileNotFoundError:
             return pd.DataFrame(columns=["Ticker", "Close Date", "Option", "Strike Price"])
@@ -36,7 +38,7 @@ class OptionsMonitor:
         self.df[["Ticker", "Close Date", "Option", "Strike Price"]].to_csv(self.data_file, index=False)
 
     def setup_gui(self):
-        self.tree = ttk.Treeview(self.root, columns=("Ticker", "Close Date", "Option", "Strike Price", "Current", "Outcome"), show="headings")
+        self.tree = ttk.Treeview(self.root, columns=("Ticker", "Close Date", "Option", "Strike Price", "Current", "Diff", "Outcome"), show="headings")
         for col in self.tree["columns"]:
             self.tree.heading(col, text=col, command=lambda c=col: self.sort_column(c), anchor="w")
             self.tree.column(col, width=70, anchor="w")
@@ -152,12 +154,19 @@ class OptionsMonitor:
         for index, row in self.df.iterrows():
             current_price = price_cache.get(row["Ticker"], 0.0)
             outcome = self.calculate_outcome(row["Option"], current_price, row["Strike Price"])
+            diff = current_price - row["Strike Price"]
+            diff_fmt = f"+{round(diff, 2)}" if diff > 0 else f"{round(diff, 2)}"
+            diff_tag = 'green_diff' if diff > 0 else 'red_diff' if diff < 0 else ''
             strike_price_fmt = int(row["Strike Price"]) if row["Strike Price"] == int(row["Strike Price"]) else round(row["Strike Price"], 2)
             current_price_fmt = int(current_price) if current_price == int(current_price) else round(current_price, 2)
             tag = 'redrow' if outcome else ('oddrow' if index % 2 else 'evenrow')
-            self.tree.insert("", "end", tags=(tag,), values=(
-                row["Ticker"], row["Close Date"], row["Option"], strike_price_fmt, current_price_fmt, outcome
+            item = self.tree.insert("", "end", tags=(tag,), values=(
+                row["Ticker"], row["Close Date"], row["Option"], strike_price_fmt, current_price_fmt, diff_fmt, outcome
             ))
+            if diff_tag:
+                self.tree.item(item, tags=(tag, diff_tag))
+                self.tree.column("Diff", anchor="w")
+                self.tree.set(item, "Diff", diff_fmt)
 
         self.last_updated_label.config(text=f"Updated  {datetime.now().strftime('%H:%M:%S')} ")
 
@@ -204,6 +213,8 @@ class OptionsMonitor:
         if col == "Close Date":
             current_year = datetime.now().year
             data.sort(key=lambda x: datetime.strptime(self.tree.set(x[1], col) + f"/{current_year}", "%m/%d/%Y"), reverse=self.sort_reverse[col])
+        elif col == "Diff":
+            data.sort(key=lambda x: float(self.tree.set(x[1], col).replace('+', '')) if self.tree.set(x[1], col) else 0.0, reverse=self.sort_reverse[col])
         else:
             try:
                 data.sort(key=lambda x: float(self.tree.set(x[1], col)) if col in ["Strike Price", "Current"] else self.tree.set(x[1], col), reverse=self.sort_reverse[col])
@@ -212,11 +223,24 @@ class OptionsMonitor:
         for new_index, (orig_index, item) in enumerate(data):
             current_price = float(self.tree.set(item, "Current")) if self.tree.set(item, "Current") else 0.0
             strike_price = float(self.tree.set(item, "Strike Price")) if self.tree.set(item, "Strike Price") else 0.0
+            diff = current_price - strike_price
+            diff_fmt = f"+{round(diff, 2)}" if diff > 0 else f"{round(diff, 2)}"
+            diff_tag = 'green_diff' if diff > 0 else 'red_diff' if diff < 0 else ''
             option = self.tree.set(item, "Option")
             outcome = self.calculate_outcome(option, current_price, strike_price)
+            strike_price_fmt = int(strike_price) if strike_price == int(strike_price) else round(strike_price, 2)
+            current_price_fmt = int(current_price) if current_price == int(current_price) else round(current_price, 2)
             tag = 'redrow' if outcome else ('oddrow' if new_index % 2 else 'evenrow')
-            self.tree.item(item, tags=(tag,))
-            self.tree.item(item, values=(self.tree.set(item, "Ticker"), self.tree.set(item, "Close Date"), option, strike_price, current_price, outcome))
+            self.tree.item(item, tags=(tag, diff_tag))
+            self.tree.item(item, values=(
+                self.tree.set(item, "Ticker"), 
+                self.tree.set(item, "Close Date"), 
+                option, 
+                strike_price_fmt, 
+                current_price_fmt, 
+                diff_fmt,
+                outcome
+            ))
             self.tree.move(item, "", new_index)
 
     def on_double_click(self, event):
