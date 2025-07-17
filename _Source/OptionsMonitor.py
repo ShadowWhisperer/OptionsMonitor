@@ -2,34 +2,28 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import os
 import pytz
 
 class OptionsMonitor:
-    def __init__(self, root):
+    def __init__(self, root): 
         self.root = root
-        self.root.title("Options Monitor")
+        self.root.title("Options Monitor - Ver 1.3")
         self.data_file = r"C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv"
         self.df = self.load_data()
         self.sort_reverse = {}  # Track sort direction
         self.editing_item = None
+        self.last_market_status = None  # Cache market status
         self.setup_gui()
 
     def load_data(self):
         os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
         try:
             df = pd.read_csv(self.data_file)
-            if 'Open Date' in df.columns:
-                df = df.drop(columns=['Open Date'])
-            if 'Time Remaining' in df.columns:
-                df = df.drop(columns=['Time Remaining'])
-            if 'Current Price' in df.columns:
-                df = df.drop(columns=['Current Price'])
-            if 'Outcome' in df.columns:
-                df = df.drop(columns=['Outcome'])
-            if 'Diff' in df.columns:
-                df = df.drop(columns=['Diff'])
+            for col in ['Open Date', 'Time Remaining', 'Current Price', 'Outcome', 'Diff']:
+                if col in df.columns:
+                    df = df.drop(columns=[col])
             return df
         except FileNotFoundError:
             return pd.DataFrame(columns=["Ticker", "Close Date", "Option", "Strike Price"])
@@ -42,22 +36,23 @@ class OptionsMonitor:
         for col in self.tree["columns"]:
             self.tree.heading(col, text=col, command=lambda c=col: self.sort_column(c), anchor="w")
             self.tree.column(col, width=70, anchor="w")
-            self.sort_reverse[col] = False  # Initialize sort direction
+            self.sort_reverse[col] = False
         self.tree.tag_configure('oddrow', background='#f0f0f0')
         self.tree.tag_configure('evenrow', background='#ffffff')
         self.tree.tag_configure('redrow', background='#ffcccc')
-        self.tree.pack(pady=10, fill="both", expand=True)
+        self.tree.pack(pady=2, fill="both", expand=True)
         self.tree.bind("<Double-1>", self.on_double_click)
 
         button_frame = tk.Frame(self.root)
-        button_frame.pack(pady=5)
-        tk.Button(button_frame, text="Refresh", command=self.refresh_data).pack(side="left", padx=5)
-        tk.Button(button_frame, text="Add", command=self.add_option).pack(side="left", padx=5)
-        tk.Button(button_frame, text="Remove", command=self.remove_selected).pack(side="left", padx=5)
-        tk.Button(button_frame, text="Remove All", command=self.remove_all).pack(side="left", padx=5)
+        button_frame.pack(pady=2)
+        self.refresh_button = tk.Button(button_frame, text="Refresh", command=self.refresh_data, width=10)
+        self.refresh_button.pack(side="left", padx=5)
+        tk.Button(button_frame, text="Add", command=self.add_option, width=10).pack(side="left", padx=5)
+        tk.Button(button_frame, text="Remove", command=self.remove_selected, width=10).pack(side="left", padx=5)
+        tk.Button(button_frame, text="Remove All", command=self.remove_all, width=10).pack(side="left", padx=5)
 
         self.status_frame = tk.Frame(self.root)
-        self.status_frame.pack(fill="x", side="bottom")
+        self.status_frame.pack(fill="x", side="bottom", pady=0)
         self.last_updated_label = tk.Label(self.status_frame, anchor="e")
         self.last_updated_label.pack(side="right")
         self.market_status_label = tk.Label(self.status_frame, anchor="w")
@@ -68,17 +63,25 @@ class OptionsMonitor:
 
     def is_market_open(self):
         now = datetime.now(pytz.timezone('US/Eastern'))
-        market_open = time(9, 30)
-        market_close = time(16, 0)
-        is_weekday = now.weekday() < 5
-        is_open_hours = market_open <= now.time() <= market_close
-        return is_weekday and is_open_hours
+        return now.weekday() < 5 and time(9, 30) <= now.time() <= time(16, 0)
 
     def update_market_status(self):
-        status = "Markets Open" if self.is_market_open() else "Markets Closed"
-        color = "green" if self.is_market_open() else "red"
-        self.market_status_label.config(text=status, fg=color)
-        self.root.after(60000, self.update_market_status)
+        now = datetime.now(pytz.timezone('US/Eastern'))
+        is_open = self.is_market_open()
+        market_open_time = datetime.combine(now.date(), time(9, 30)).replace(tzinfo=pytz.timezone('US/Eastern'))
+        time_to_open = (market_open_time - now).total_seconds()
+        is_near_open = 0 <= time_to_open <= 300
+
+        if self.last_market_status != is_open:
+            status = "Markets Open" if is_open else "Markets Closed"
+            color = "green" if is_open else "red"
+            self.market_status_label.config(text=status, fg=color)
+            self.refresh_button.config(state="normal" if is_open else "disabled")
+            if is_open and self.last_market_status is False:
+                self.refresh_data()
+            self.last_market_status = is_open
+
+        self.root.after(30000 if is_near_open else 10000, self.update_market_status)
 
     def add_option(self):
         add_window = tk.Toplevel(self.root)
@@ -108,12 +111,12 @@ class OptionsMonitor:
         close_date_entry.grid(row=3, column=1, pady=5)
 
         tk.Button(add_window, text="Add Option", command=lambda: self._submit_option(
-            ticker_entry, call_put_var, strike_entry, close_date_entry, add_window)
+            ticker_entry, call_put_var, strike_entry, close_date_entry, add_window), width=10
         ).pack(pady=10)
 
     def _submit_option(self, ticker_entry, call_put_var, strike_entry, close_date_entry, window):
         ticker = ticker_entry.get().upper()
-        call_put = call_put_var.get()
+        call_put = call_put_var.get().capitalize()
         strike_price = strike_entry.get()
         close_date = close_date_entry.get()
 
@@ -155,7 +158,7 @@ class OptionsMonitor:
             current_price = price_cache.get(row["Ticker"], 0.0)
             outcome = self.calculate_outcome(row["Option"], current_price, row["Strike Price"])
             diff = current_price - row["Strike Price"]
-            diff_fmt = f"+{round(diff, 2)}" if diff > 0 else f"{round(diff, 2)}"
+            diff_fmt = f"+{round(diff, 2):.2f}" if diff > 0 else f"-{round(abs(diff), 2):.2f}"
             diff_tag = 'green_diff' if diff > 0 else 'red_diff' if diff < 0 else ''
             strike_price_fmt = int(row["Strike Price"]) if row["Strike Price"] == int(row["Strike Price"]) else round(row["Strike Price"], 2)
             current_price_fmt = int(current_price) if current_price == int(current_price) else round(current_price, 2)
@@ -177,18 +180,6 @@ class OptionsMonitor:
             return "Purchase" if current_price < strike_price else ""
 
     def refresh_data(self):
-        unique_tickers = self.df["Ticker"].unique()
-        price_cache = {}
-        for ticker in unique_tickers:
-            try:
-                yf_ticker = yf.Ticker(ticker)
-                quote = yf_ticker.get_info().get('regularMarketPrice', None)
-                if quote is None:
-                    history = yf_ticker.history(period="1d")
-                    quote = round(history["Close"].iloc[-1], 2) if not history.empty else 0.0
-                price_cache[ticker] = quote
-            except Exception:
-                price_cache[ticker] = 0.0
         self.populate_treeview()
 
     def remove_selected(self):
@@ -207,14 +198,14 @@ class OptionsMonitor:
         self.save_data()
 
     def sort_column(self, col):
-        self.sort_reverse[col] = not self.sort_reverse.get(col, False)  # Toggle sort direction
+        self.sort_reverse[col] = not self.sort_reverse.get(col, False)
         items = list(self.tree.get_children())
         data = [(self.tree.index(item), item) for item in items]
         if col == "Close Date":
             current_year = datetime.now().year
             data.sort(key=lambda x: datetime.strptime(self.tree.set(x[1], col) + f"/{current_year}", "%m/%d/%Y"), reverse=self.sort_reverse[col])
         elif col == "Diff":
-            data.sort(key=lambda x: float(self.tree.set(x[1], col).replace('+', '')) if self.tree.set(x[1], col) else 0.0, reverse=self.sort_reverse[col])
+            data.sort(key=lambda x: float(self.tree.set(x[1], col).replace('+', '').replace('-', '')) * (-1 if '-' in self.tree.set(x[1], col) else 1), reverse=self.sort_reverse[col])
         else:
             try:
                 data.sort(key=lambda x: float(self.tree.set(x[1], col)) if col in ["Strike Price", "Current"] else self.tree.set(x[1], col), reverse=self.sort_reverse[col])
@@ -224,7 +215,7 @@ class OptionsMonitor:
             current_price = float(self.tree.set(item, "Current")) if self.tree.set(item, "Current") else 0.0
             strike_price = float(self.tree.set(item, "Strike Price")) if self.tree.set(item, "Strike Price") else 0.0
             diff = current_price - strike_price
-            diff_fmt = f"+{round(diff, 2)}" if diff > 0 else f"{round(diff, 2)}"
+            diff_fmt = f"+{round(diff, 2):.2f}" if diff > 0 else f"-{round(abs(diff), 2):.2f}"
             diff_tag = 'green_diff' if diff > 0 else 'red_diff' if diff < 0 else ''
             option = self.tree.set(item, "Option")
             outcome = self.calculate_outcome(option, current_price, strike_price)
@@ -247,7 +238,7 @@ class OptionsMonitor:
         item = self.tree.identify_row(event.y)
         if item:
             column = self.tree.identify_column(event.x)
-            if column in ("#1", "#2", "#3", "#4"):  # Editable columns: Ticker, Close Date, Option, Strike Price
+            if column in ("#1", "#2", "#3", "#4"):
                 self.editing_item = item
                 self.start_editing(item, column)
 
@@ -266,10 +257,12 @@ class OptionsMonitor:
                     messagebox.showerror("Error", "Ticker cannot exceed 5 characters.")
                     entry.destroy()
                     return
-                if column == "#3" and new_value not in ["Call", "Put"]:
-                    messagebox.showerror("Error", "Option must be Call or Put.")
-                    entry.destroy()
-                    return
+                if column == "#3":
+                    new_value = new_value.capitalize()
+                    if new_value not in ["Call", "Put"]:
+                        messagebox.showerror("Error", "Option must be Call or Put.")
+                        entry.destroy()
+                        return
                 if column == "#4":
                     try:
                         float(new_value)
@@ -287,6 +280,14 @@ class OptionsMonitor:
                 self.tree.set(item, column, new_value)
                 self.update_df_from_tree()
                 self.save_data()
+                if column in ["#3", "#4"]:
+                    current_price = float(self.tree.set(item, "Current")) if self.tree.set(item, "Current") else 0.0
+                    strike_price = float(self.tree.set(item, "Strike Price")) if self.tree.set(item, "Strike Price") else 0.0
+                    option = self.tree.set(item, "Option")
+                    outcome = self.calculate_outcome(option, current_price, strike_price)
+                    self.tree.set(item, "Outcome", outcome)
+                    tag = 'redrow' if outcome else ('oddrow' if int(self.tree.index(item)) % 2 else 'evenrow')
+                    self.tree.item(item, tags=(tag,))
                 entry.destroy()
 
             entry.bind("<Return>", save_edit)
@@ -306,6 +307,6 @@ class OptionsMonitor:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("800x420")
+    root.geometry("620x300")
     app = OptionsMonitor(root)
     root.mainloop()
