@@ -13,4 +13,4 @@ Double click an entry to modify it, then press the enter key.
 ```
 pyinstaller --noconsole --onefile -n OptionsMonitor.exe options.py
 ```
-<img width="738" height="404" alt="om" src="https://github.com/user-attachments/assets/5d4c2260-f7cf-4da6-b630-9af1ac35ca58" />
+<img width="634" height="325" alt="om" src="https://github.com/user-attachments/assets/985ef0a0-5dd3-4eab-950e-bfe1dfc3df10" />
