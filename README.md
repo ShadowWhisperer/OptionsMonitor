@@ -3,7 +3,7 @@ Stock prices are pulled from Yahoo Finance.
 
 Stock list is saved here *C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv*  
 
-Double click an entry to modify it, then press the enter key.  
+Double click an entry to modify it, then press Enter or click off.  
 
 [Download](https://github.com/ShadowWhisperer/OptionsMonitor/releases/latest/download/OptionsMonitor.exe)
 
