@@ -6,23 +6,27 @@ import os
 from datetime import datetime, time, timedelta
 import pytz
 import math
+import time as time_module
+import threading
 
 class OptionsMonitor:
     def __init__(self, root): 
         self.root = root
-        self.root.title("Options Monitor - Ver 1.5")
+        self.root.title("Options Monitor - Ver 1.6")
         self.data_file = r"C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv"
         self.data = self.load_data()
-        self.price_cache = {}  # Cache yfinance prices
-        self.sort_reverse = {}  # Track sort direction
-        self.last_market_status = None  # Cache market status
-        self.refresh_interval = None  # Track refresh interval
-        self.last_interval = "15 Mins"  # Default Autoupdate time
-        self.last_updated_label = None  # Reference to last updated label
-        self.DevMode = 0
-        self.current_sort_col = None  # Track current sorted column
-        self.current_sort_reverse = False  # Track current sort direction
+        self.price_cache = {}
+        self.sort_reverse = {}
+        self.last_market_status = None
+        self.refresh_interval = None
+        self.last_interval = "15 Mins"
+        self.last_updated_label = None
+        self.DevMode = 0  #Dev Mode
+        self.current_sort_col = None
+        self.current_sort_reverse = False
         self.setup_gui()
+        self.populate_treeview()
+        threading.Thread(target=self.fetch_initial_prices, daemon=True).start()
 
     def load_data(self):
         os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
@@ -88,7 +92,6 @@ class OptionsMonitor:
         self.status_frame.grid(row=2, column=0, sticky="ew")
         
         self.update_market_status()
-        self.populate_treeview()
         self.schedule_refresh()
 
     def is_market_open(self):
@@ -147,11 +150,20 @@ class OptionsMonitor:
     def add_option(self):
         add_window = tk.Toplevel(self.root)
         add_window.title("Add")
-        add_window.geometry("220x210")
         add_window.resizable(False, False)
 
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        window_width = 210
+        window_height = 192
+        x = root_x + (root_width - window_width) // 2
+        y = root_y + (root_height - window_height) // 2
+        add_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+
         form_frame = tk.Frame(add_window)
-        form_frame.pack(pady=2, padx=1)
+        form_frame.pack(pady=4, padx=1)
 
         tk.Label(form_frame, text="Ticker").grid(row=0, column=0, sticky="e", padx=4, pady=4)
         ticker_entry = tk.Entry(form_frame)
@@ -178,7 +190,7 @@ class OptionsMonitor:
 
         tk.Button(add_window, text="Add Option", command=lambda: self._submit_option(
             ticker_entry, call_put_var, contracts_entry, strike_entry, close_date_entry, add_window), width=10
-        ).pack(pady=1)
+        ).pack(pady=3)
 
     def _submit_option(self, ticker_entry, call_put_var, contracts_entry, strike_entry, close_date_entry, window):
         ticker = ticker_entry.get().upper()
@@ -202,36 +214,58 @@ class OptionsMonitor:
         else:
             messagebox.showerror("Error", "Invalid Ticker.")
 
+    def fetch_initial_prices(self):
+        unique_tickers = {row[0] for row in self.data if len(row) == 5}
+        for ticker in unique_tickers:
+            if ticker not in self.price_cache or self.price_cache[ticker] in ["Checking", "?"]:
+                self.price_cache[ticker] = "Checking"
+                for attempt in range(3):
+                    try:
+                        yf_ticker = yf.Ticker(ticker)
+                        quote = yf_ticker.get_info().get('regularMarketPrice', None)
+                        if quote is None or (isinstance(quote, float) and math.isnan(quote)):
+                            history = yf_ticker.history(period="1d")
+                            quote = round(history["Close"].iloc[-1], 2) if not history.empty and not math.isnan(history["Close"].iloc[-1]) else None
+                        self.price_cache[ticker] = quote if quote is not None and not math.isnan(quote) else "?"
+                        if self.DevMode == 1:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: {'Success' if quote is not None and not math.isnan(quote) else 'Failed'}, Price: {quote if quote is not None and not math.isnan(quote) else 'N/A'}")
+                        break
+                    except Exception as e:
+                        if self.DevMode == 1:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: Failed, Error: {str(e)}")
+                        if attempt < 2:
+                            time_module.sleep(1)
+                        self.price_cache[ticker] = "?"
+                self.root.after(0, self.populate_treeview)
+
     def populate_treeview(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
         unique_tickers = {row[0] for row in self.data if len(row) == 5}
         for ticker in unique_tickers:
             if ticker not in self.price_cache:
-                try:
-                    yf_ticker = yf.Ticker(ticker)
-                    quote = yf_ticker.get_info().get('regularMarketPrice', None)
-                    if quote is None:
-                        history = yf_ticker.history(period="1d")
-                        quote = round(history["Close"].iloc[-1], 2) if not history.empty else None
-                    self.price_cache[ticker] = quote if quote is not None else float('nan')
-                except Exception:
-                    self.price_cache[ticker] = float('nan')
+                self.price_cache[ticker] = "Checking"
         for index, row in enumerate(self.data):
             if len(row) != 5:
                 continue
-            current_price = self.price_cache.get(row[0], float('nan'))
+            current_price = self.price_cache.get(row[0], "Checking")
             option = row[2]
             strike_price = row[4]
             contracts = row[3]
-            outcome = self.calculate_outcome(option, current_price, strike_price) if not math.isnan(current_price) else ""
-            diff = current_price - strike_price if not math.isnan(current_price) else float('nan')
-            diff_fmt = f"+{round(diff, 2):.2f}" if not math.isnan(diff) and diff > 0 else f"-{round(abs(diff), 2):.2f}" if not math.isnan(diff) and diff < 0 else ""
+            outcome = ""
+            diff = float('nan')
+            diff_fmt = ""
+            value = ""
+            value_fmt = ""
+            if current_price not in ["Checking", "?"]:
+                outcome = self.calculate_outcome(option, current_price, strike_price) if not math.isnan(current_price) else ""
+                diff = current_price - strike_price if not math.isnan(current_price) else float('nan')
+                diff_fmt = f"+{round(diff, 2):.2f}" if not math.isnan(diff) and diff > 0 else f"-{round(abs(diff), 2):.2f}" if not math.isnan(diff) and diff < 0 else ""
+                value = round(diff * (contracts * 100), 2) if outcome and not math.isnan(diff) else ""
+                value_fmt = f"{int(value):,}" if value else ""
             diff_tag = 'green_diff' if not math.isnan(diff) and diff > 0 else 'red_diff' if not math.isnan(diff) and diff < 0 else ''
-            value = round(diff * (contracts * 100), 2) if outcome and not math.isnan(diff) else ""
-            value_fmt = f"{int(value)}" if value else ""
             strike_price_fmt = int(strike_price) if strike_price == int(strike_price) else round(strike_price, 2)
-            current_price_fmt = int(current_price) if not math.isnan(current_price) and current_price == int(current_price) else round(current_price, 2) if not math.isnan(current_price) else ""
+            current_price_fmt = current_price if current_price in ["Checking", "?"] else (int(current_price) if not math.isnan(current_price) and current_price == int(current_price) else round(current_price, 2))
             tag = 'redrow' if outcome else ('oddrow' if index % 2 else 'evenrow')
             item = self.tree.insert("", "end", tags=(tag, f"list_index_{index}"), values=(
                 row[0], row[1], row[2], row[3], strike_price_fmt, current_price_fmt, diff_fmt, outcome, value_fmt
@@ -242,61 +276,35 @@ class OptionsMonitor:
         self.last_updated_label.config(text=f"{datetime.now().strftime('%H:%M:%S')}")
 
     def calculate_outcome(self, call_put, current_price, strike_price):
-        if call_put == "Call":
-            return "Sell" if current_price > strike_price else ""
-        else:
-            return "Purchase" if current_price < strike_price else ""
+        if call_put == "Put":
+            return "Purchase" if strike_price > current_price else ""
+        else:  # Call
+            return "Sell" if strike_price < current_price else ""
 
     def refresh_data(self):
         unique_tickers = {row[0] for row in self.data if len(row) == 5}
         for ticker in unique_tickers:
             if ticker not in self.price_cache or self.is_market_open():
-                try:
-                    yf_ticker = yf.Ticker(ticker)
-                    quote = yf_ticker.get_info().get('regularMarketPrice', None)
-                    if quote is None:
-                        history = yf_ticker.history(period="1d")
-                        quote = round(history["Close"].iloc[-1], 2) if not history.empty else None
-                    self.price_cache[ticker] = quote if quote is not None else float('nan')
-                    if self.DevMode == 1:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: {'Success' if quote is not None else 'Failed'}, Price: {quote if quote is not None else 'N/A'}")
-                except Exception as e:
-                    self.price_cache[ticker] = float('nan')
-                    if self.DevMode == 1:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: Failed, Error: {str(e)}")
+                for attempt in range(3):
+                    try:
+                        yf_ticker = yf.Ticker(ticker)
+                        quote = yf_ticker.get_info().get('regularMarketPrice', None)
+                        if quote is None or (isinstance(quote, float) and math.isnan(quote)):
+                            history = yf_ticker.history(period="1d")
+                            quote = round(history["Close"].iloc[-1], 2) if not history.empty and not math.isnan(history["Close"].iloc[-1]) else None
+                        self.price_cache[ticker] = quote if quote is not None and not math.isnan(quote) else "?"
+                        if self.DevMode == 1:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: {'Success' if quote is not None and not math.isnan(quote) else 'Failed'}, Price: {quote if quote is not None and not math.isnan(quote) else 'N/A'}")
+                        break
+                    except Exception as e:
+                        if self.DevMode == 1:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: Failed, Error: {str(e)}")
+                        if attempt < 2:
+                            time_module.sleep(1)
+                        self.price_cache[ticker] = "?"
+                self.root.after(0, self.populate_treeview)
 
-        for item in self.tree.get_children():
-            tags = self.tree.item(item, "tags")
-            list_index = None
-            for tag in tags:
-                if tag.startswith("list_index_"):
-                    list_index = int(tag.replace("list_index_", ""))
-                    break
-            if list_index is not None and list_index < len(self.data) and len(self.data[list_index]) == 5:
-                row = self.data[list_index]
-                current_price = self.price_cache.get(row[0], float('nan'))
-                option = row[2]
-                strike_price = row[4]
-                contracts = row[3]
-                outcome = self.calculate_outcome(option, current_price, strike_price) if not math.isnan(current_price) else ""
-                diff = current_price - strike_price if not math.isnan(current_price) else float('nan')
-                diff_fmt = f"+{round(diff, 2):.2f}" if not math.isnan(diff) and diff > 0 else f"-{round(abs(diff), 2):.2f}" if not math.isnan(diff) and diff < 0 else ""
-                diff_tag = 'green_diff' if not math.isnan(diff) and diff > 0 else 'red_diff' if not math.isnan(diff) and diff < 0 else ''
-                value = round(diff * (contracts * 100), 2) if outcome and not math.isnan(diff) else ""
-                value_fmt = f"{int(value)}" if value else ""
-                strike_price_fmt = int(strike_price) if strike_price == int(strike_price) else round(strike_price, 2)
-                current_price_fmt = int(current_price) if not math.isnan(current_price) and current_price == int(current_price) else round(current_price, 2) if not math.isnan(current_price) else ""
-                tag = 'redrow' if outcome else ('oddrow' if int(self.tree.index(item)) % 2 else 'evenrow')
-                tags = [t for t in tags if t.startswith('list_index_') or t in ('oddrow', 'evenrow', 'redrow')]
-                tags.append(tag)
-                self.tree.item(item, tags=tuple(tags))
-                self.tree.item(item, values=(
-                    row[0], row[1], row[2], row[3], strike_price_fmt, current_price_fmt, diff_fmt, outcome, value_fmt
-                ))
-                if diff_tag:
-                    self.tree.set(item, "Diff", diff_fmt)
-
-        self.last_updated_label.config(text=f"{datetime.now().strftime('%H:%M:%S')}")
+        self.root.after(0, self.populate_treeview)
 
     def remove_selected(self):
         selected = self.tree.selection()
@@ -344,7 +352,7 @@ class OptionsMonitor:
         def get_sort_key(item):
             if len(item) != 5:
                 return (float('inf'), "")
-            value = item[col_index] if col_index < 5 else ""  # Only use stored values for columns 0-4
+            value = item[col_index] if col_index < 5 else ""
             ticker = item[0]
             if col == "Ends":
                 try:
@@ -356,21 +364,26 @@ class OptionsMonitor:
             elif col == "Diff":
                 current_price = self.price_cache.get(ticker, float('nan'))
                 strike_price = item[4]
-                if not math.isnan(current_price):
+                if current_price not in ["Checking", "?"] and not math.isnan(current_price):
                     diff = current_price - strike_price
                     return (diff, ticker)
                 return (float('inf'), ticker)
             elif col == "Current":
                 current_price = self.price_cache.get(ticker, float('nan'))
-                return (current_price, ticker) if not math.isnan(current_price) else (float('inf'), ticker)
+                return (current_price, ticker) if current_price not in ["Checking", "?"] and not math.isnan(current_price) else (float('inf'), ticker)
             elif col == "Value":
                 current_price = self.price_cache.get(ticker, float('nan'))
                 strike_price = item[4]
                 contracts = item[3]
-                if not math.isnan(current_price) and self.calculate_outcome(item[2], current_price, strike_price):
+                if current_price not in ["Checking", "?"] and not math.isnan(current_price) and self.calculate_outcome(item[2], current_price, strike_price):
                     value = (current_price - strike_price) * (contracts * 100)
                     return (value, ticker)
                 return (float('inf'), ticker)
+            elif col == "Outcome":
+                current_price = self.price_cache.get(ticker, float('nan'))
+                outcome = self.calculate_outcome(item[2], current_price, item[4]) if current_price not in ["Checking", "?"] and not math.isnan(current_price) else ""
+                priority = 1 if outcome == "Purchase" else 2 if outcome == "Sell" else 3
+                return (priority, ticker)
             elif col in ["Contracts", "Strike"]:
                 return (value, ticker)
             else:
@@ -450,5 +463,6 @@ class OptionsMonitor:
 if __name__ == "__main__":
     root = tk.Tk()
     root.geometry("620x300")
+    root.resizable(True, True)
     app = OptionsMonitor(root)
     root.mainloop()
