@@ -3,7 +3,7 @@ from tkinter import ttk, messagebox
 import yfinance as yf
 import csv
 import os
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 import pytz
 import math
 import time as time_module
@@ -12,7 +12,7 @@ import threading
 class OptionsMonitor:
     def __init__(self, root): 
         self.root = root
-        self.root.title("Options Monitor - Ver 1.6")
+        self.root.title("Options Monitor - Ver 1.7")
         self.data_file = r"C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv"
         self.data = self.load_data()
         self.price_cache = {}
@@ -21,7 +21,7 @@ class OptionsMonitor:
         self.refresh_interval = None
         self.last_interval = "15 Mins"
         self.last_updated_label = None
-        self.DevMode = 0  #Dev Mode
+        self.DevMode = 0
         self.current_sort_col = None
         self.current_sort_reverse = False
         self.setup_gui()
@@ -80,7 +80,9 @@ class OptionsMonitor:
         self.last_updated_label.pack(side="right", padx=5)
 
         self.interval_var = tk.StringVar(value="5 Mins")
-        self.interval_combo = ttk.Combobox(button_frame, textvariable=self.interval_var, values=["Don't Update", "5 Mins", "10 Mins", "15 Mins", "30 Mins"], width=16, state="readonly")
+        self.interval_combo = ttk.Combobox(button_frame, textvariable=self.interval_var,
+                                           values=["Don't Update", "5 Mins", "10 Mins", "15 Mins", "30 Mins", "1 Hour", "2 Hours"],
+                                           width=16, state="readonly")
         self.interval_combo.pack(side="right", padx=(0, 0))
         self.interval_combo.bind("<<ComboboxSelected>>", self.schedule_refresh)
 
@@ -110,7 +112,7 @@ class OptionsMonitor:
         if self.last_market_status != is_open:
             self.refresh_button.config(state="normal" if is_open else "disabled")
             if is_open:
-                self.interval_combo.config(values=["Don't Update", "5 Mins", "10 Mins", "15 Mins", "30 Mins"], state="readonly", style="TCombobox")
+                self.interval_combo.config(values=["Don't Update", "5 Mins", "10 Mins", "15 Mins", "30 Mins", "1 Hour", "2 Hours"], state="readonly", style="TCombobox")
                 self.interval_var.set(self.last_interval)
                 self.schedule_refresh()
             else:
@@ -136,7 +138,10 @@ class OptionsMonitor:
 
         self.last_interval = interval
         try:
-            ms = int(interval.replace(" Mins", "")) * 60 * 1000
+            if "Hour" in interval:
+                ms = int(interval.replace(" Hour", "").replace("s", "")) * 60 * 60 * 1000
+            else:
+                ms = int(interval.replace(" Mins", "")) * 60 * 1000
         except ValueError:
             return
 
@@ -156,14 +161,14 @@ class OptionsMonitor:
         root_y = self.root.winfo_y()
         root_width = self.root.winfo_width()
         root_height = self.root.winfo_height()
-        window_width = 210
-        window_height = 192
+        window_width = 220
+        window_height = 210
         x = root_x + (root_width - window_width) // 2
         y = root_y + (root_height - window_height) // 2
         add_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
         form_frame = tk.Frame(add_window)
-        form_frame.pack(pady=4, padx=1)
+        form_frame.pack(pady=2, padx=1)
 
         tk.Label(form_frame, text="Ticker").grid(row=0, column=0, sticky="e", padx=4, pady=4)
         ticker_entry = tk.Entry(form_frame)
@@ -190,7 +195,30 @@ class OptionsMonitor:
 
         tk.Button(add_window, text="Add Option", command=lambda: self._submit_option(
             ticker_entry, call_put_var, contracts_entry, strike_entry, close_date_entry, add_window), width=10
-        ).pack(pady=3)
+        ).pack(pady=1)
+
+    def _submit_option(self, ticker_entry, call_put_var, contracts_entry, strike_entry, close_date_entry, window):
+        ticker = ticker_entry.get().upper()
+        call_put = call_put_var.get().capitalize()
+        contracts = contracts_entry.get()
+        strike_price = strike_entry.get()
+        close_date = close_date_entry.get()
+
+        if close_date and not close_date.count('/') == 1:
+            messagebox.showerror("Error", "Close must be M/D format or empty.")
+            return
+        if ticker and call_put in ["Call", "Put"]:
+            try:
+                new_row = [ticker, close_date, call_put, int(contracts), float(strike_price)]
+                self.data.append(new_row)
+                self.populate_treeview()
+                self.save_data()
+                threading.Thread(target=self.fetch_initial_prices, daemon=True).start()
+                window.destroy()
+            except ValueError:
+                messagebox.showerror("Error", "Check Contracts & Strike.")
+        else:
+            messagebox.showerror("Error", "Invalid Ticker.")
 
     def _submit_option(self, ticker_entry, call_put_var, contracts_entry, strike_entry, close_date_entry, window):
         ticker = ticker_entry.get().upper()
@@ -262,7 +290,7 @@ class OptionsMonitor:
                 diff = current_price - strike_price if not math.isnan(current_price) else float('nan')
                 diff_fmt = f"+{round(diff, 2):.2f}" if not math.isnan(diff) and diff > 0 else f"-{round(abs(diff), 2):.2f}" if not math.isnan(diff) and diff < 0 else ""
                 value = round(diff * (contracts * 100), 2) if outcome and not math.isnan(diff) else ""
-                value_fmt = f"{int(value):,}" if value else ""
+                value_fmt = f"{int(value)}" if value else ""
             diff_tag = 'green_diff' if not math.isnan(diff) and diff > 0 else 'red_diff' if not math.isnan(diff) and diff < 0 else ''
             strike_price_fmt = int(strike_price) if strike_price == int(strike_price) else round(strike_price, 2)
             current_price_fmt = current_price if current_price in ["Checking", "?"] else (int(current_price) if not math.isnan(current_price) and current_price == int(current_price) else round(current_price, 2))
@@ -379,11 +407,6 @@ class OptionsMonitor:
                     value = (current_price - strike_price) * (contracts * 100)
                     return (value, ticker)
                 return (float('inf'), ticker)
-            elif col == "Outcome":
-                current_price = self.price_cache.get(ticker, float('nan'))
-                outcome = self.calculate_outcome(item[2], current_price, item[4]) if current_price not in ["Checking", "?"] and not math.isnan(current_price) else ""
-                priority = 1 if outcome == "Purchase" else 2 if outcome == "Sell" else 3
-                return (priority, ticker)
             elif col in ["Contracts", "Strike"]:
                 return (value, ticker)
             else:
@@ -463,6 +486,5 @@ class OptionsMonitor:
 if __name__ == "__main__":
     root = tk.Tk()
     root.geometry("620x300")
-    root.resizable(True, True)
     app = OptionsMonitor(root)
     root.mainloop()
