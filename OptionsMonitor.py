@@ -220,28 +220,6 @@ class OptionsMonitor:
         else:
             messagebox.showerror("Error", "Invalid Ticker.")
 
-    def _submit_option(self, ticker_entry, call_put_var, contracts_entry, strike_entry, close_date_entry, window):
-        ticker = ticker_entry.get().upper()
-        call_put = call_put_var.get().capitalize()
-        contracts = contracts_entry.get()
-        strike_price = strike_entry.get()
-        close_date = close_date_entry.get()
-
-        if close_date and not close_date.count('/') == 1:
-            messagebox.showerror("Error", "Close must be M/D format or empty.")
-            return
-        if ticker and call_put in ["Call", "Put"]:
-            try:
-                new_row = [ticker, close_date, call_put, int(contracts), float(strike_price)]
-                self.data.append(new_row)
-                self.populate_treeview()
-                self.save_data()
-                window.destroy()
-            except ValueError:
-                messagebox.showerror("Error", "Check Contracts & Strike.")
-        else:
-            messagebox.showerror("Error", "Invalid Ticker.")
-
     def fetch_initial_prices(self):
         unique_tickers = {row[0] for row in self.data if len(row) == 5}
         for ticker in unique_tickers:
