@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 import yfinance as yf
 import csv
 import os
+import sys
 from datetime import datetime, time
 import pytz
 import math
@@ -12,7 +13,7 @@ import threading
 class OptionsMonitor:
     def __init__(self, root):
         self.root = root
-        self.root.title("Options Monitor - Ver 1.8")
+        self.root.title("Options Monitor  1.9")
         self.data_file = r"C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv"
         self.data = self.load_data()
         self.price_cache = {}
@@ -95,7 +96,7 @@ class OptionsMonitor:
         tk.Button(button_frame, text="Remove All", command=self.confirm_remove_all, width=10).pack(side="left", padx=(10, 5))
 
         self.last_updated_label = tk.Label(button_frame, text="")
-        self.last_updated_label.pack(side="right", padx=5)
+        self.last_updated_label.pack(side="right", padx=1)
 
         self.interval_var = tk.StringVar(value="5 Mins")
         self.interval_combo = ttk.Combobox(
@@ -110,6 +111,11 @@ class OptionsMonitor:
         style = ttk.Style()
         style.configure("Red.TCombobox", foreground="red")
         style.map("Red.TCombobox", foreground=[("disabled", "red")])
+
+        self.filter_var = tk.StringVar(value="All")
+        tk.Radiobutton(button_frame, text="Puts", variable=self.filter_var, value="Put", command=self.populate_treeview).pack(side="right", padx=(1, 1))
+        tk.Radiobutton(button_frame, text="Calls", variable=self.filter_var, value="Call", command=self.populate_treeview).pack(side="right", padx=(1, 1))
+        tk.Radiobutton(button_frame, text="All", variable=self.filter_var, value="All", command=self.populate_treeview).pack(side="right", padx=(1, 1))
 
         self.status_frame = tk.Frame(self.root)
         self.status_frame.grid(row=2, column=0, sticky="ew")
@@ -150,6 +156,7 @@ class OptionsMonitor:
 
     def schedule_refresh(self, event=None):
         if self.refresh_interval is not None:
+            self._just_refreshed = True
             self.root.after_cancel(self.refresh_interval)
             self.refresh_interval = None
 
@@ -168,6 +175,7 @@ class OptionsMonitor:
 
         def refresh_if_open():
             if self.is_market_open():
+                self._just_refreshed = True
                 self.refresh_data()
             self.refresh_interval = self.root.after(ms, refresh_if_open)
 
@@ -235,14 +243,7 @@ class OptionsMonitor:
             return
         if ticker and call_put in ["Call", "Put"]:
             try:
-                new_row = [
-                    ticker,
-                    close_date,
-                    call_put,
-                    int(contracts),
-                    float(premium),
-                    float(strike_price)
-                ]
+                new_row = [ticker, close_date, call_put, int(contracts), float(premium), float(strike_price)]
                 self.data.append(new_row)
                 self.populate_treeview()
                 self.save_data()
@@ -278,69 +279,83 @@ class OptionsMonitor:
                 self.root.after(0, self.populate_treeview)
 
     def populate_treeview(self):
+        # Clear tree
         for item in self.tree.get_children():
             self.tree.delete(item)
+    
+        # Get selected filter
+        selected_filter = self.filter_var.get() if hasattr(self, 'filter_var') else "All"
+    
         unique_tickers = {row[0] for row in self.data if len(row) == 6}
         for ticker in unique_tickers:
             if ticker not in self.price_cache:
                 self.price_cache[ticker] = "...."
-
+    
         for index, row in enumerate(self.data):
             if len(row) != 6:
                 continue
+    
+            # Apply filter
+            if selected_filter != "All" and row[2] != selected_filter:
+                continue
+    
             ticker, ends, option = row[0], row[1], row[2]
             contracts = row[3]
-            premium = row[4]   # treated as total premium paid for the position
+            premium = row[4]
             strike_price = row[5]
             current_price = self.price_cache.get(ticker, "....")
-
+    
             outcome = ""
             diff = float('nan')
             diff_fmt = ""
             value = ""
             value_fmt = ""
-
+    
             if current_price not in ["....", "?"] and not math.isnan(current_price):
                 if option == "Call":
                     diff = current_price - strike_price
                 else:  # Put
                     diff = strike_price - current_price
-
+    
                 diff_fmt = f"+{round(diff, 2):.2f}" if diff > 0 else f"-{round(abs(diff), 2):.2f}" if diff < 0 else ""
                 outcome = self.calculate_outcome(option, current_price, strike_price)
                 intrinsic = max(0.0, diff)
 
                 if outcome:
                     if option == "Put" and outcome == "Purchase":
-                        # Calculate based on effective cost vs current price
                         effective_cost = strike_price - (premium / (contracts * 100))
                         value_num = (current_price - effective_cost) * (contracts * 100)
                     else:
-                        value_num = (intrinsic * (contracts * 100)) - premium
+                        value_num = (diff * (contracts * 100)) - premium
+                        if option == "Call" and outcome == "Sell":
+                            value_num = -value_num
 
                     value = round(value_num, 2)
-
-                    if value > 0:
-                        value_fmt = f"+{value:,.0f}" if value.is_integer() else f"+{value:,.2f}"
-                    else:
-                        value_fmt = f"{value:,.0f}" if value.is_integer() else f"{value:,.2f}"
+                    value_fmt = f"+{value:,.0f}" if value > 0 and value.is_integer() else \
+                                f"+{value:,.2f}" if value > 0 else \
+                                f"{value:,.0f}" if value.is_integer() else f"{value:,.2f}"
                 else:
                     value = ""
                     value_fmt = ""
-
+    
             diff_tag = 'green_diff' if not math.isnan(diff) and diff > 0 else 'red_diff' if not math.isnan(diff) and diff < 0 else ''
             strike_price_fmt = int(strike_price) if strike_price == int(strike_price) else round(strike_price, 2)
-            current_price_fmt = current_price if current_price in ["....", "?"] else (int(current_price) if current_price == int(current_price) else round(current_price, 2))
+            current_price_fmt = current_price if current_price in ["....", "?"] else (
+                int(current_price) if current_price == int(current_price) else round(current_price, 2)
+            )
             tag = 'redrow' if outcome else ('oddrow' if index % 2 else 'evenrow')
-
+    
             item = self.tree.insert("", "end", tags=(tag, f"list_index_{index}"), values=(
                 ticker, ends, option, contracts, int(premium), strike_price_fmt, current_price_fmt, diff_fmt, outcome, value_fmt
             ))
-
+    
             if diff_tag:
                 self.tree.set(item, "Diff", diff_fmt)
-
-        self.last_updated_label.config(text=f"{datetime.now().strftime('%H:%M:%S')}")
+    
+        #Only update time if price checked
+        if getattr(self, "_just_refreshed", False):
+            self.last_updated_label.config(text=f"{datetime.now().strftime('%H:%M:%S')}")
+            self._just_refreshed = False
 
     def calculate_outcome(self, call_put, current_price, strike_price):
         # returns Sell for Calls (if ITM), Purchase for Puts (if ITM)
@@ -350,6 +365,7 @@ class OptionsMonitor:
             return "Sell" if strike_price < current_price else ""
 
     def refresh_data(self):
+        self._just_refreshed = True
         unique_tickers = {row[0] for row in self.data if len(row) == 6}
         for ticker in unique_tickers:
             if ticker not in self.price_cache or self.is_market_open():
@@ -468,7 +484,6 @@ class OptionsMonitor:
         item = self.tree.identify_row(event.y)
         if item:
             column = self.tree.identify_column(event.x)
-            # allow editing Ticker, Ends, Option, Contracts, Premium, Strike (#1..#6)
             if column in ("#1", "#2", "#3", "#4", "#5", "#6"):
                 self.editing_item = item
                 self.start_editing(item, column)
@@ -478,7 +493,6 @@ class OptionsMonitor:
         entry = tk.Entry(self.root)
         bbox = self.tree.bbox(item, column)
         if bbox:
-            # bbox returns (x, y, width, height) relative to tree; placing on root is usually fine in most setups
             entry.place(x=bbox[0], y=bbox[1], width=bbox[2], anchor="nw")
             entry.insert(0, current_value)
             entry.focus_set()
@@ -491,7 +505,6 @@ class OptionsMonitor:
                     entry.destroy()
                     return
 
-                # Validation & casting
                 try:
                     if col_index == 0:  # Ticker
                         if len(new_value_raw) > 5:
@@ -524,17 +537,18 @@ class OptionsMonitor:
                     entry.destroy()
                     return
 
-                # find data list index
-                tags = self.tree.item(item, "tags")
-                list_index = None
-                for tag in tags:
-                    if tag.startswith("list_index_"):
-                        list_index = int(tag.replace("list_index_", ""))
-                        break
-                if list_index is not None and list_index < len(self.data):
-                    self.data[list_index][col_index] = new_value
-                    self.populate_treeview()
-                    self.save_data()
+                row_values = self.tree.item(item, "values")
+                if row_values:
+                    ticker, ends, option = row_values[0], row_values[1], row_values[2]
+                    strike = float(row_values[5])
+                    for i, row in enumerate(self.data):
+                        if (len(row) == 6 and row[0] == ticker and row[1] == ends
+                                and row[2] == option and row[5] == strike):
+                            self.data[i][col_index] = new_value
+                            break
+
+                self.populate_treeview()
+                self.save_data()
                 entry.destroy()
 
             entry.bind("<Return>", save_edit)
@@ -542,6 +556,11 @@ class OptionsMonitor:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("710x300") #Width x Height
+    if getattr(sys, 'frozen', False):
+        icon_path = os.path.join(sys._MEIPASS, 'om.ico')
+    else:
+        icon_path = 'om.ico'
+    root.iconbitmap(icon_path)
+    root.geometry("740x300") #Width x Height
     app = OptionsMonitor(root)
     root.mainloop()
