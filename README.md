@@ -11,7 +11,7 @@ Double click an entry to modify it, then press Enter or click off.
  
 **Build from source**  
 ```
-pyinstaller --noconsole --onefile -n OptionsMonitor.exe options.py
+pyinstaller --noconsole --onefile -i om.ico -n OptionsMonitor.exe options.py --version-file version.txt --add-data "om.ico;."
 ```
 
-<img width="722" height="344" alt="Capture" src="https://github.com/user-attachments/assets/77dc781f-e91e-4862-9ab1-25cca26779a4" />
+<img width="741" height="365" alt="Capture" src="https://github.com/user-attachments/assets/8833a94c-50c4-43ef-8752-a95866ed16a5" />
