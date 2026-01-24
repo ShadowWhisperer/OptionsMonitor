@@ -9,11 +9,12 @@ import pytz
 import math
 import time as time_module
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class OptionsMonitor:
     def __init__(self, root):
         self.root = root
-        self.root.title("Options Monitor  1.9")
+        self.root.title("Options Monitor 1.10")
         self.data_file = r"C:\ProgramData\ShadowWhisperer\OptionsMonitor\data.csv"
         self.data = self.load_data()
         self.price_cache = {}
@@ -40,9 +41,11 @@ class OptionsMonitor:
                         continue
                     try:
                         if len(row) == 6:
-                            data.append([row[0], row[1], row[2], int(row[3]), float(row[4]), float(row[5])])
+                            premium = float(row[4]) if row[4].strip() else 0.0
+                            data.append([row[0], row[1], row[2], int(row[3]), premium, float(row[5])])
                         elif len(row) == 5:
-                            data.append([row[0], row[1], row[2], int(row[3]), 0.0, float(row[4])])
+                            premium = float(row[4]) if row[4].strip() else 0.0
+                            data.append([row[0], row[1], row[2], int(row[3]), 0.0, premium])
                     except ValueError:
                         continue
                 return data
@@ -50,7 +53,6 @@ class OptionsMonitor:
             return []
 
     def save_data(self):
-        # Write header then data rows (header will be ignored on load)
         os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
         with open(self.data_file, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -185,6 +187,11 @@ class OptionsMonitor:
         add_window = tk.Toplevel(self.root)
         add_window.title("Add")
         add_window.resizable(False, False)
+        
+        if getattr(sys, 'frozen', False):
+            add_window.iconbitmap(os.path.join(sys._MEIPASS, 'om.ico'))
+        else:
+            add_window.iconbitmap('om.ico')
 
         root_x = self.root.winfo_x()
         root_y = self.root.winfo_y()
@@ -234,7 +241,7 @@ class OptionsMonitor:
         ticker = ticker_entry.get().upper().strip()
         call_put = call_put_var.get().capitalize()
         contracts = contracts_entry.get().strip()
-        premium = premium_entry.get().strip()
+        premium_str = premium_entry.get().strip()
         strike_price = strike_entry.get().strip()
         close_date = close_date_entry.get().strip()
 
@@ -243,7 +250,8 @@ class OptionsMonitor:
             return
         if ticker and call_put in ["Call", "Put"]:
             try:
-                new_row = [ticker, close_date, call_put, int(contracts), float(premium), float(strike_price)]
+                premium = float(premium_str) if premium_str else 0.0
+                new_row = [ticker, close_date, call_put, int(contracts), premium, float(strike_price)]
                 self.data.append(new_row)
                 self.populate_treeview()
                 self.save_data()
@@ -254,63 +262,77 @@ class OptionsMonitor:
         else:
             messagebox.showerror("Error", "Invalid Ticker.")
 
+    def fetch_price_for_ticker(self, ticker):
+        for attempt in range(3):
+            try:
+                yf_ticker = yf.Ticker(ticker)
+                quote = yf_ticker.get_info().get('regularMarketPrice', None)
+                if quote is None or (isinstance(quote, float) and math.isnan(quote)):
+                    history = yf_ticker.history(period="1d")
+                    quote = round(history["Close"].iloc[-1], 2) if not history.empty and not math.isnan(history["Close"].iloc[-1]) else None
+                result = quote if quote is not None and not math.isnan(quote) else "?"
+                if self.DevMode == 1:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: {result}")
+                return ticker, result
+            except Exception as e:
+                if self.DevMode == 1:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: Failed, Error: {str(e)}")
+                if attempt < 2:
+                    time_module.sleep(1)
+        return ticker, "?"
+
     def fetch_initial_prices(self):
         unique_tickers = {row[0] for row in self.data if len(row) == 6}
-        for ticker in unique_tickers:
-            if ticker not in self.price_cache or self.price_cache[ticker] in ["....", "?"]:
-                self.price_cache[ticker] = "...."
-                for attempt in range(3):
-                    try:
-                        yf_ticker = yf.Ticker(ticker)
-                        quote = yf_ticker.get_info().get('regularMarketPrice', None)
-                        if quote is None or (isinstance(quote, float) and math.isnan(quote)):
-                            history = yf_ticker.history(period="1d")
-                            quote = round(history["Close"].iloc[-1], 2) if not history.empty and not math.isnan(history["Close"].iloc[-1]) else None
-                        self.price_cache[ticker] = quote if quote is not None and not math.isnan(quote) else "?"
-                        if self.DevMode == 1:
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: {self.price_cache[ticker]}")
-                        break
-                    except Exception as e:
-                        if self.DevMode == 1:
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: Failed, Error: {str(e)}")
-                        if attempt < 2:
-                            time_module.sleep(1)
-                        self.price_cache[ticker] = "?"
+        tickers_to_fetch = [t for t in unique_tickers if t not in self.price_cache or self.price_cache[t] in ["....", "?"]]
+        
+        # Set initial state
+        for ticker in tickers_to_fetch:
+            self.price_cache[ticker] = "...."
+        
+        if not tickers_to_fetch:
+            return
+        
+        # Fetch prices concurrently
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(self.fetch_price_for_ticker, ticker): ticker for ticker in tickers_to_fetch}
+            
+            for future in as_completed(futures):
+                ticker, price = future.result()
+                self.price_cache[ticker] = price
+                # Update UI after each price is fetched
                 self.root.after(0, self.populate_treeview)
 
     def populate_treeview(self):
         # Clear tree
         for item in self.tree.get_children():
             self.tree.delete(item)
-    
-        # Get selected filter
+
         selected_filter = self.filter_var.get() if hasattr(self, 'filter_var') else "All"
-    
+
         unique_tickers = {row[0] for row in self.data if len(row) == 6}
         for ticker in unique_tickers:
             if ticker not in self.price_cache:
                 self.price_cache[ticker] = "...."
-    
+
         for index, row in enumerate(self.data):
             if len(row) != 6:
                 continue
-    
-            # Apply filter
+
             if selected_filter != "All" and row[2] != selected_filter:
                 continue
-    
+
             ticker, ends, option = row[0], row[1], row[2]
             contracts = row[3]
             premium = row[4]
             strike_price = row[5]
             current_price = self.price_cache.get(ticker, "....")
-    
+
             outcome = ""
             diff = float('nan')
             diff_fmt = ""
             value = ""
             value_fmt = ""
-    
+
             if current_price not in ["....", "?"] and not math.isnan(current_price):
                 if option == "Call":
                     diff = current_price - strike_price
@@ -323,7 +345,7 @@ class OptionsMonitor:
 
                 if outcome:
                     if option == "Put" and outcome == "Purchase":
-                        effective_cost = strike_price - (premium / (contracts * 100))
+                        effective_cost = strike_price - (premium / (contracts * 100)) if contracts > 0 else strike_price
                         value_num = (current_price - effective_cost) * (contracts * 100)
                     else:
                         value_num = (diff * (contracts * 100)) - premium
@@ -337,22 +359,26 @@ class OptionsMonitor:
                 else:
                     value = ""
                     value_fmt = ""
-    
+
             diff_tag = 'green_diff' if not math.isnan(diff) and diff > 0 else 'red_diff' if not math.isnan(diff) and diff < 0 else ''
             strike_price_fmt = int(strike_price) if strike_price == int(strike_price) else round(strike_price, 2)
             current_price_fmt = current_price if current_price in ["....", "?"] else (
                 int(current_price) if current_price == int(current_price) else round(current_price, 2)
             )
+            
+            # Format premium display
+            premium_fmt = int(premium) if premium == int(premium) else round(premium, 2)
+            
             tag = 'redrow' if outcome else ('oddrow' if index % 2 else 'evenrow')
-    
+
             item = self.tree.insert("", "end", tags=(tag, f"list_index_{index}"), values=(
-                ticker, ends, option, contracts, int(premium), strike_price_fmt, current_price_fmt, diff_fmt, outcome, value_fmt
+                ticker, ends, option, contracts, premium_fmt, strike_price_fmt, current_price_fmt, diff_fmt, outcome, value_fmt
             ))
-    
+
             if diff_tag:
                 self.tree.set(item, "Diff", diff_fmt)
     
-        #Only update time if price checked
+        # Only update time if price checked
         if getattr(self, "_just_refreshed", False):
             self.last_updated_label.config(text=f"{datetime.now().strftime('%H:%M:%S')}")
             self._just_refreshed = False
@@ -365,30 +391,20 @@ class OptionsMonitor:
             return "Sell" if strike_price < current_price else ""
 
     def refresh_data(self):
+        """Refresh all prices asynchronously"""
         self._just_refreshed = True
         unique_tickers = {row[0] for row in self.data if len(row) == 6}
-        for ticker in unique_tickers:
-            if ticker not in self.price_cache or self.is_market_open():
-                for attempt in range(3):
-                    try:
-                        yf_ticker = yf.Ticker(ticker)
-                        quote = yf_ticker.get_info().get('regularMarketPrice', None)
-                        if quote is None or (isinstance(quote, float) and math.isnan(quote)):
-                            history = yf_ticker.history(period="1d")
-                            quote = round(history["Close"].iloc[-1], 2) if not history.empty and not math.isnan(history["Close"].iloc[-1]) else None
-                        self.price_cache[ticker] = quote if quote is not None and not math.isnan(quote) else "?"
-                        if self.DevMode == 1:
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: {self.price_cache[ticker]}")
-                        break
-                    except Exception as e:
-                        if self.DevMode == 1:
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Lookup {ticker}: Failed, Error: {str(e)}")
-                        if attempt < 2:
-                            time_module.sleep(1)
-                        self.price_cache[ticker] = "?"
+        
+        if not unique_tickers:
+            return
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(self.fetch_price_for_ticker, ticker): ticker for ticker in unique_tickers}
+            
+            for future in as_completed(futures):
+                ticker, price = future.result()
+                self.price_cache[ticker] = price
                 self.root.after(0, self.populate_treeview)
-
-        self.root.after(0, self.populate_treeview)
 
     def remove_selected(self):
         selected = self.tree.selection()
@@ -527,7 +543,7 @@ class OptionsMonitor:
                     elif col_index == 3:  # Contracts
                         new_value = int(new_value_raw)
                     elif col_index == 4:  # Premium
-                        new_value = float(new_value_raw)
+                        new_value = float(new_value_raw) if new_value_raw else 0.0
                     elif col_index == 5:  # Strike
                         new_value = float(new_value_raw)
                     else:
@@ -561,6 +577,7 @@ if __name__ == "__main__":
     else:
         icon_path = 'om.ico'
     root.iconbitmap(icon_path)
-    root.geometry("740x300") #Width x Height
+    root.geometry("740x300")  # Width x Height
     app = OptionsMonitor(root)
     root.mainloop()
+    
